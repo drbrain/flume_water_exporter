@@ -53,6 +53,12 @@ lazy_static! {
         &["name", "product"],
     )
     .unwrap();
+    static ref BRIDGE_CONNECTED: GaugeVec = register_gauge_vec!(
+        "flume_water_bridge_connected",
+        "Flume bridge is connected to Flume",
+        &["name"],
+    )
+    .unwrap();
     static ref SENSOR_PRODUCT: GaugeVec = register_gauge_vec!(
         "flume_water_sensor_product_info",
         "Flume sensor product",
@@ -62,7 +68,13 @@ lazy_static! {
     static ref SENSOR_BATTERY: GaugeVec = register_gauge_vec!(
         "flume_water_sensor_battery_info",
         "Flume sensor battery level",
-        &["name", "battery_level"],
+        &["name"],
+    )
+    .unwrap();
+    static ref SENSOR_CONNECTED: GaugeVec = register_gauge_vec!(
+        "flume_water_sensor_connected",
+        "Flume sensor is connected to Flume",
+        &["name"],
     )
     .unwrap();
 }
@@ -82,26 +94,7 @@ pub struct Downloader {
     expires_at: Option<Instant>,
 
     user_id: Option<i64>,
-    bridge: Option<Bridge>,
-    sensor: Option<Sensor>,
-}
-
-enum Device {
-    Bridge(Bridge),
-    Sensor(Sensor),
-}
-
-struct Bridge {
-    id: String,
-    name: String,
-    product: String,
-    last_check: Instant,
-}
-
-struct Sensor {
-    id: String,
-    product: String,
-    last_check: Instant,
+    devices_last_update: Instant,
 }
 
 impl Downloader {
@@ -113,6 +106,10 @@ impl Downloader {
         let secret_id = configuration.secret_id();
         let username = configuration.username();
         let password = configuration.password();
+
+        let devices_last_update = Instant::now()
+            .checked_sub(Duration::from_secs(86400))
+            .unwrap();
 
         let client = Client::builder()
             .connect_timeout(timeout)
@@ -135,8 +132,7 @@ impl Downloader {
             expires_at: None,
 
             user_id: None,
-            bridge: None,
-            sensor: None,
+            devices_last_update,
         }
     }
 
@@ -206,54 +202,18 @@ impl Downloader {
     }
 
     pub async fn devices(&mut self) {
-        if self.bridge.is_none() {
-            let path = format!("/users/{}/devices?location=true", self.user_id.unwrap());
-
-            let json = self.get(&path, false).await.unwrap();
-
-            json["data"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(device)
-                .for_each(|device| match device {
-                    Device::Bridge(b) => self.bridge = Some(b),
-                    Device::Sensor(s) => self.sensor = Some(s),
-                });
-
-            return;
-        }
-
         let one_hour_ago = Instant::now()
             .checked_sub(Duration::from_secs(3600))
             .unwrap();
 
-        if let Some(bridge) = &self.bridge {
-            if bridge.last_check > one_hour_ago {
-                let path = format!(
-                    "/users/{}/devices/{}?location=true",
-                    self.user_id.unwrap(),
-                    bridge.id
-                );
+        if one_hour_ago >= self.devices_last_update {
+            let path = format!("/users/{}/devices?location=true", self.user_id.unwrap());
 
-                let json = self.get(&path, false).await.unwrap();
+            let json = self.get(&path, false).await.unwrap();
 
-                update_bridge(&json);
-            }
-        }
+            json["data"].as_array().unwrap().iter().for_each(device);
 
-        if let Some(sensor) = &self.sensor {
-            if sensor.last_check > one_hour_ago {
-                let path = format!(
-                    "/users/{}/devices/{}?location=true",
-                    self.user_id.unwrap(),
-                    sensor.id
-                );
-
-                let json = self.get(&path, false).await.unwrap();
-
-                update_sensor(&json);
-            }
+            self.devices_last_update = Instant::now();
         }
     }
 
@@ -331,53 +291,54 @@ impl Downloader {
     }
 }
 
-fn device(device: &serde_json::Value) -> Device {
+fn device(device: &serde_json::Value) {
     let device_type = device["type"].as_u64().unwrap();
 
     match device_type {
         BRIDGE_ID => update_bridge(device),
         SENSOR_ID => update_sensor(device),
         _ => unreachable!("unknown device type {}", device_type),
-    }
+    };
 }
 
-fn update_bridge(device: &serde_json::Value) -> Device {
-    let id = device["id"].as_str().unwrap().to_string();
+fn update_bridge(device: &serde_json::Value) {
     let name = device["location"]["name"].as_str().unwrap().to_string();
+    let connected = if device["connected"].as_bool().unwrap() {
+        1.0
+    } else {
+        0.0
+    };
     let product = device["product"].as_str().unwrap().to_string();
-    let last_check = Instant::now();
 
     BRIDGE_PRODUCT
         .with_label_values(&[&name, &product])
         .set(1.0);
-
-    Device::Bridge(Bridge {
-        id,
-        name,
-        product,
-        last_check,
-    })
+    BRIDGE_CONNECTED.with_label_values(&[&name]).set(connected);
 }
 
-fn update_sensor(device: &serde_json::Value) -> Device {
-    let id = device["id"].as_str().unwrap().to_string();
+fn update_sensor(device: &serde_json::Value) {
     let name = device["location"]["name"].as_str().unwrap().to_string();
+    let connected = if device["connected"].as_bool().unwrap() {
+        1.0
+    } else {
+        0.0
+    };
     let product = device["product"].as_str().unwrap().to_string();
-    let battery_level = device["battery_level"].as_str().unwrap().to_string();
-    let last_check = Instant::now();
+    let battery_level = device["battery_level"].as_str().unwrap();
+    let battery_level = match battery_level {
+        "high" => 1.0,
+        "medium" => 0.5,
+        "low" => 0.25,
+        _ => unreachable!("Unknown battery level {:?}", battery_level),
+    };
 
     SENSOR_PRODUCT
         .with_label_values(&[&name, &product])
         .set(1.0);
     SENSOR_BATTERY
-        .with_label_values(&[&name, &battery_level])
-        .set(1.0);
-
-    Device::Sensor(Sensor {
-        id,
-        product,
-        last_check,
-    })
+        .with_label_values(&[&name])
+        .set(battery_level);
+    SENSOR_CONNECTED.with_label_values(&[&name]).set(connected);
 }
 
 async fn deserialize(
