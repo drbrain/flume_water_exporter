@@ -6,6 +6,8 @@ edition = "2021"
 [dependencies]
 anyhow             = "^1.0"
 console-subscriber = "0.1.0"
+chrono             = "0.4"
+chrono-tz          = "0.6"
 env_logger         = "0.9"
 lazy_static        = "^1.4"
 log                = "0.4"

@@ -1,14 +1,20 @@
 use anyhow::Context;
 
+use chrono::DateTime;
+
+use chrono_tz::Tz;
+
 use crate::configuration::Configuration;
 
 use lazy_static::lazy_static;
 
 use log::debug;
 
+use prometheus::register_counter_vec;
 use prometheus::register_gauge_vec;
 use prometheus::register_histogram_vec;
 use prometheus::register_int_counter_vec;
+use prometheus::CounterVec;
 use prometheus::GaugeVec;
 use prometheus::HistogramVec;
 use prometheus::IntCounterVec;
@@ -50,31 +56,37 @@ lazy_static! {
     static ref BRIDGE_PRODUCT: GaugeVec = register_gauge_vec!(
         "flume_water_bridge_product_info",
         "Flume bridge product",
-        &["name", "product"],
+        &["location", "product"],
     )
     .unwrap();
     static ref BRIDGE_CONNECTED: GaugeVec = register_gauge_vec!(
         "flume_water_bridge_connected",
         "Flume bridge is connected to Flume",
-        &["name"],
+        &["location"],
     )
     .unwrap();
     static ref SENSOR_PRODUCT: GaugeVec = register_gauge_vec!(
         "flume_water_sensor_product_info",
         "Flume sensor product",
-        &["name", "product"],
+        &["location", "product"],
     )
     .unwrap();
     static ref SENSOR_BATTERY: GaugeVec = register_gauge_vec!(
         "flume_water_sensor_battery_info",
         "Flume sensor battery level",
-        &["name"],
+        &["location"],
     )
     .unwrap();
     static ref SENSOR_CONNECTED: GaugeVec = register_gauge_vec!(
         "flume_water_sensor_connected",
         "Flume sensor is connected to Flume",
-        &["name"],
+        &["location"],
+    )
+    .unwrap();
+    static ref USAGE: CounterVec = register_counter_vec!(
+        "flume_water_usage_liters",
+        "Water usage in liters",
+        &["location"],
     )
     .unwrap();
 }
@@ -91,10 +103,22 @@ pub struct Downloader {
 
     access_token: Option<String>,
     refresh_token: Option<String>,
-    expires_at: Option<Instant>,
+    token_expires_at: Option<Instant>,
 
     user_id: Option<i64>,
     devices_last_update: Instant,
+    sensors: Option<Vec<Sensor>>,
+}
+
+enum Device {
+    Bridge,
+    Sensor(Sensor),
+}
+
+struct Sensor {
+    id: String,
+    location: String,
+    last_update: DateTime<Tz>,
 }
 
 impl Downloader {
@@ -129,10 +153,11 @@ impl Downloader {
 
             access_token: None,
             refresh_token: None,
-            expires_at: None,
+            token_expires_at: None,
 
             user_id: None,
             devices_last_update,
+            sensors: None,
         }
     }
 
@@ -146,13 +171,15 @@ impl Downloader {
         });
     }
 
-    pub async fn fetch(&mut self) {
+    async fn fetch(&mut self) {
         self.login().await;
 
         self.devices().await;
+
+        self.query().await;
     }
 
-    pub async fn login(&mut self) {
+    async fn login(&mut self) {
         if self.access_token.is_none() {
             let body = json!({
                 "grant_type": "password",
@@ -167,14 +194,14 @@ impl Downloader {
 
             self.access_token = Some(data["access_token"].as_str().unwrap().to_string());
             self.refresh_token = Some(data["refresh_token"].as_str().unwrap().to_string());
-            self.expires_at = Some(
+            self.token_expires_at = Some(
                 Instant::now()
                     .checked_add(Duration::from_secs(data["expires_in"].as_u64().unwrap()))
                     .unwrap(),
             );
         }
 
-        if Instant::now() >= self.expires_at.unwrap() {
+        if Instant::now() >= self.token_expires_at.unwrap() {
             let body = json!( {
                 "grant_type": "refresh_token",
                 "refresh_token": self.refresh_token.clone().unwrap(),
@@ -187,7 +214,7 @@ impl Downloader {
 
             self.access_token = Some(data["access_token"].as_str().unwrap().to_string());
             self.refresh_token = Some(data["refresh_token"].as_str().unwrap().to_string());
-            self.expires_at = Some(
+            self.token_expires_at = Some(
                 Instant::now()
                     .checked_add(Duration::from_secs(data["expires_in"].as_u64().unwrap()))
                     .unwrap(),
@@ -201,7 +228,7 @@ impl Downloader {
         }
     }
 
-    pub async fn devices(&mut self) {
+    async fn devices(&mut self) {
         let one_hour_ago = Instant::now()
             .checked_sub(Duration::from_secs(3600))
             .unwrap();
@@ -211,13 +238,67 @@ impl Downloader {
 
             let json = self.get(&path, false).await.unwrap();
 
-            json["data"].as_array().unwrap().iter().for_each(device);
+            self.sensors = Some(
+                json["data"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .map(device)
+                    .filter_map(|device| match device {
+                        Device::Sensor(s) => Some(s),
+                        _ => None,
+                    })
+                    .collect(),
+            );
 
             self.devices_last_update = Instant::now();
         }
     }
 
-    pub async fn post(
+    async fn query(&mut self) {
+        if let Some(sensors) = &self.sensors {
+            for sensor in sensors {
+                self.query_sensor(sensor).await;
+            }
+        }
+    }
+
+    async fn query_sensor(&self, sensor: &mut Sensor) {
+        let since_time = sensor.last_update.format("%F %T").to_string();
+
+        let body = json!({
+            "queries": [{
+                "request_id": since_time,
+                "bucket": "MIN",
+                "since_datetime": since_time,
+                "operation": "SUM",
+            }]
+        });
+
+        debug!("query: {}", body);
+
+        let path = format!(
+            "/users/{}/devices/{}/query",
+            self.user_id.unwrap(),
+            sensor.id
+        );
+
+        let json = self.post(&path, body, false).await.unwrap();
+        debug!("result: {}", json);
+        let query_result = &json["data"][0][since_time];
+
+        if query_result.as_array().unwrap().is_empty() {
+            return;
+        }
+
+        let value = query_result[0]["value"].as_f64().unwrap();
+
+        USAGE.with_label_values(&[&sensor.location]).inc_by(value);
+
+        sensor.last_update
+    }
+
+    async fn post(
         &self,
         path: &str,
         body: serde_json::Value,
@@ -259,7 +340,7 @@ impl Downloader {
         json_from(response, &uri, "POST", error_tx).await
     }
 
-    pub async fn get(&self, path: &str, send_error: bool) -> Option<serde_json::Value> {
+    async fn get(&self, path: &str, send_error: bool) -> Option<serde_json::Value> {
         let uri = format!("{}{}", API_URI, path);
 
         debug!("GET {}", uri);
@@ -291,18 +372,18 @@ impl Downloader {
     }
 }
 
-fn device(device: &serde_json::Value) {
+fn device(device: &serde_json::Value) -> Device {
     let device_type = device["type"].as_u64().unwrap();
 
     match device_type {
         BRIDGE_ID => update_bridge(device),
         SENSOR_ID => update_sensor(device),
         _ => unreachable!("unknown device type {}", device_type),
-    };
+    }
 }
 
-fn update_bridge(device: &serde_json::Value) {
-    let name = device["location"]["name"].as_str().unwrap().to_string();
+fn update_bridge(device: &serde_json::Value) -> Device {
+    let location = device["location"]["name"].as_str().unwrap().to_string();
     let connected = if device["connected"].as_bool().unwrap() {
         1.0
     } else {
@@ -311,13 +392,18 @@ fn update_bridge(device: &serde_json::Value) {
     let product = device["product"].as_str().unwrap().to_string();
 
     BRIDGE_PRODUCT
-        .with_label_values(&[&name, &product])
+        .with_label_values(&[&location, &product])
         .set(1.0);
-    BRIDGE_CONNECTED.with_label_values(&[&name]).set(connected);
+    BRIDGE_CONNECTED
+        .with_label_values(&[&location])
+        .set(connected);
+
+    Device::Bridge
 }
 
-fn update_sensor(device: &serde_json::Value) {
-    let name = device["location"]["name"].as_str().unwrap().to_string();
+fn update_sensor(device: &serde_json::Value) -> Device {
+    let id = device["id"].as_str().unwrap().to_string();
+    let last_seen = device["last_seen"].as_str().unwrap().to_string();
     let connected = if device["connected"].as_bool().unwrap() {
         1.0
     } else {
@@ -332,13 +418,29 @@ fn update_sensor(device: &serde_json::Value) {
         _ => unreachable!("Unknown battery level {:?}", battery_level),
     };
 
+    let location = device["location"]["name"].as_str().unwrap().to_string();
+    let timezone = device["location"]["tz"].as_str().unwrap().to_string();
+
     SENSOR_PRODUCT
-        .with_label_values(&[&name, &product])
+        .with_label_values(&[&location, &product])
         .set(1.0);
     SENSOR_BATTERY
-        .with_label_values(&[&name])
+        .with_label_values(&[&location])
         .set(battery_level);
-    SENSOR_CONNECTED.with_label_values(&[&name]).set(connected);
+    SENSOR_CONNECTED
+        .with_label_values(&[&location])
+        .set(connected);
+
+    let timezone: Tz = timezone.parse().unwrap();
+    let last_update = DateTime::parse_from_rfc3339(&last_seen)
+        .unwrap()
+        .with_timezone(&timezone);
+
+    Device::Sensor(Sensor {
+        id,
+        location,
+        last_update,
+    })
 }
 
 async fn deserialize(
