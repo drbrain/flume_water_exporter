@@ -1,3 +1,5 @@
+use anyhow::Result;
+
 use crate::client::Client;
 use crate::configuration::Configuration;
 use crate::flume::Flume;
@@ -11,7 +13,7 @@ impl FlumeBuilder {
         FlumeBuilder { configuration }
     }
 
-    pub async fn build(self) -> Flume {
+    pub async fn build(self) -> Result<Flume> {
         let mut client = Client::new(&self.configuration);
 
         let (access_token, refresh_token, token_expires_at) = client
@@ -19,14 +21,14 @@ impl FlumeBuilder {
                 &self.configuration.username(),
                 &self.configuration.password(),
             )
-            .await;
+            .await?;
 
-        Flume {
+        Ok(Flume {
             client,
 
             access_token,
             refresh_token,
             token_expires_at,
-        }
+        })
     }
 }

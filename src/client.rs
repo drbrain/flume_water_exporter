@@ -1,4 +1,5 @@
 use anyhow::Context;
+use anyhow::Result;
 
 use chrono::DateTime;
 
@@ -88,7 +89,7 @@ impl Client {
         &mut self,
         username: &str,
         password: &str,
-    ) -> (String, String, Instant) {
+    ) -> Result<(String, String, Instant)> {
         let body = json!({
             "grant_type": "password",
             "client_id": self.client_id,
@@ -100,7 +101,8 @@ impl Client {
         let json = self
             .post("/oauth/token", None, body, "authenticate")
             .await
-            .unwrap();
+            .context("Authentication failed")?;
+
         let data = &json["data"][0];
 
         let access_token = data["access_token"].as_str().unwrap().to_string();
@@ -110,7 +112,7 @@ impl Client {
             .checked_add(Duration::from_secs(expires_in))
             .unwrap();
 
-        (access_token, refresh_token, token_expires_at)
+        Ok((access_token, refresh_token, token_expires_at))
     }
 
     pub async fn devices(&mut self, access_token: &str, user_id: i64) -> Option<Vec<Device>> {

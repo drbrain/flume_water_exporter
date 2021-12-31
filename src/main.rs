@@ -30,7 +30,7 @@ async fn main() -> Result<()> {
 
     let flume = FlumeBuilder::from_configuration(configuration.clone())
         .build()
-        .await;
+        .await?;
 
     Downloader::new(flume, configuration.refresh_interval(), error_tx.clone())
         .start()
