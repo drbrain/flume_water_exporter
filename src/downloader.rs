@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use anyhow::Error;
 use anyhow::Result;
 
@@ -73,16 +74,12 @@ pub struct Downloader {
     flume: Flume,
 
     user_id: Option<i64>,
-    devices_last_update: Instant,
+    devices_last_update: Option<Instant>,
     sensors: Option<Vec<Sensor>>,
 }
 
 impl Downloader {
     pub fn new(flume: Flume, refresh_interval: Duration, error_tx: Sender) -> Self {
-        let devices_last_update = Instant::now()
-            .checked_sub(Duration::from_secs(86400))
-            .unwrap();
-
         Downloader {
             error_tx,
             refresh_interval,
@@ -91,21 +88,13 @@ impl Downloader {
 
             user_id: None,
 
-            devices_last_update,
+            devices_last_update: None,
             sensors: None,
         }
     }
 
     pub async fn start(mut self) {
         tokio::spawn(async move {
-            match self.flume.user_id().await {
-                Ok(user_id) => {
-                    self.user_id = Some(user_id);
-                    debug!("user_id: {:?}", self.user_id)
-                }
-                Err(e) => self.send_error(e).await,
-            }
-
             loop {
                 match self.update().await {
                     Ok(_) => (),
@@ -132,16 +121,33 @@ impl Downloader {
         Ok(())
     }
 
-    async fn devices(&mut self) -> Result<bool> {
-        let one_hour = Duration::from_secs(3600);
+    async fn user_id(&mut self) -> Result<i64> {
+        match self.flume.user_id().await {
+            Ok(user_id) => {
+                self.user_id = Some(user_id);
+                debug!("user_id: {:?}", self.user_id)
+            }
+            Err(e) => self.send_error(e).await,
+        }
 
-        if Instant::now().duration_since(self.devices_last_update) < one_hour {
-            return Ok(false);
+        self.user_id
+            .ok_or_else(|| anyhow!("Missing user_id somehow"))
+    }
+
+    async fn devices(&mut self) -> Result<bool> {
+        if let Some(last_update) = self.devices_last_update {
+            let one_hour = Duration::from_secs(3600);
+
+            if Instant::now().duration_since(last_update) < one_hour {
+                return Ok(false);
+            }
         }
 
         let mut sensors = Vec::new();
 
-        let devices = self.flume.devices(self.user_id.unwrap()).await?;
+        let user_id = self.user_id().await?;
+
+        let devices = self.flume.devices(user_id).await?;
         debug!("Found {} devices", devices.len());
 
         for device in devices {
@@ -156,16 +162,16 @@ impl Downloader {
         }
 
         self.sensors = Some(sensors);
-        self.devices_last_update = Instant::now();
+        self.devices_last_update = Some(Instant::now());
 
         Ok(true)
     }
 
     async fn query(&mut self) -> Result<()> {
+        let user_id = self.user_id().await?;
+
         if let Some(sensors) = &self.sensors {
             let mut updated_sensors = Vec::with_capacity(sensors.len());
-
-            let user_id = self.user_id.unwrap();
 
             for sensor in sensors {
                 let new_usage = self.flume.query_sensor(user_id, &sensor).await?;
