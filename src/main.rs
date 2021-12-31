@@ -1,6 +1,12 @@
+mod bridge;
+mod client;
 mod configuration;
+mod device;
 mod downloader;
 mod exporter;
+mod flume;
+mod flume_builder;
+mod sensor;
 
 use anyhow::anyhow;
 use anyhow::Result;
@@ -10,6 +16,7 @@ use log::error;
 use configuration::Configuration;
 use downloader::Downloader;
 use exporter::Exporter;
+use flume_builder::FlumeBuilder;
 
 use tokio::sync::mpsc;
 
@@ -21,7 +28,11 @@ async fn main() -> Result<()> {
 
     let (error_tx, error_rx) = mpsc::channel(1);
 
-    Downloader::new(&configuration, error_tx.clone())
+    let flume = FlumeBuilder::from_configuration(configuration.clone())
+        .build()
+        .await;
+
+    Downloader::new(flume, configuration.refresh_interval(), error_tx.clone())
         .start()
         .await;
 
