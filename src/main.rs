@@ -24,7 +24,7 @@ use tokio::sync::mpsc;
 async fn main() -> Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
 
-    let configuration = Configuration::load_from_next_arg();
+    let configuration = Configuration::load_from_next_arg()?;
 
     let (error_tx, error_rx) = mpsc::channel(1);
 

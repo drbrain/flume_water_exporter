@@ -1,3 +1,6 @@
+use anyhow::Context;
+use anyhow::Result;
+
 use serde::Deserialize;
 
 use std::fs;
@@ -16,22 +19,22 @@ pub struct Configuration {
 
 impl Configuration {
     /// Load a configuration file from `path`.
-    pub fn load<P: AsRef<Path>>(path: P) -> Self {
-        let source = fs::read_to_string(path).unwrap();
+    pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let source = fs::read_to_string(path)?;
 
-        toml::from_str(&source).unwrap()
+        toml::from_str(&source).context("Invalid configuration file")
     }
 
     /// Load configuration from the next argument in the environment.
-    pub fn load_from_next_arg() -> Self {
+    pub fn load_from_next_arg() -> Result<Self> {
         let file = match std::env::args().nth(1) {
             None => {
-                return Configuration::default();
+                return Ok(Configuration::default());
             }
             Some(f) => f,
         };
 
-        Configuration::load(file)
+        Configuration::load(&file).with_context(|| format!("Unable to load {}", file))
     }
 
     /// Bind address for Prometheus metric server
