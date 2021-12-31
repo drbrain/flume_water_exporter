@@ -1,3 +1,5 @@
+use anyhow::Result;
+
 use crate::client::Client;
 use crate::device::Device;
 use crate::sensor::Sensor;
@@ -14,35 +16,37 @@ pub struct Flume {
 }
 
 impl Flume {
-    pub async fn devices(&mut self, user_id: i64) -> Option<Vec<Device>> {
-        self.refresh_token_if_expired().await;
+    pub async fn devices(&mut self, user_id: i64) -> Result<Vec<Device>> {
+        self.refresh_token_if_expired().await?;
 
         self.client.devices(&self.access_token, user_id).await
     }
 
-    pub async fn query_sensor(&mut self, user_id: i64, sensor: &Sensor) -> Option<f64> {
-        self.refresh_token_if_expired().await;
+    pub async fn query_sensor(&mut self, user_id: i64, sensor: &Sensor) -> Result<f64> {
+        self.refresh_token_if_expired().await?;
 
         self.client
             .query_samples(&self.access_token, user_id, sensor)
             .await
     }
 
-    async fn refresh_token_if_expired(&mut self) {
+    async fn refresh_token_if_expired(&mut self) -> Result<bool> {
         if Instant::now() < self.token_expires_at {
-            return;
+            return Ok(false);
         };
 
         let (access_token, refresh_token, token_expires_at) =
-            self.client.refresh_token(&self.refresh_token).await;
+            self.client.refresh_token(&self.refresh_token).await?;
 
         self.access_token = access_token;
         self.refresh_token = refresh_token;
         self.token_expires_at = token_expires_at;
+
+        Ok(true)
     }
 
-    pub async fn user_id(&mut self) -> Option<i64> {
-        self.refresh_token_if_expired().await;
+    pub async fn user_id(&mut self) -> Result<i64> {
+        self.refresh_token_if_expired().await?;
 
         self.client.user_id(&self.access_token).await
     }

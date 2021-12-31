@@ -115,21 +115,18 @@ impl Client {
         Ok((access_token, refresh_token, token_expires_at))
     }
 
-    pub async fn devices(&mut self, access_token: &str, user_id: i64) -> Option<Vec<Device>> {
+    pub async fn devices(&mut self, access_token: &str, user_id: i64) -> Result<Vec<Device>> {
         let path = format!("/users/{}/devices?location=true", user_id);
+        let json = self.get(&path, Some(access_token), "devices").await?;
 
-        if let Some(json) = self.get(&path, Some(access_token), "devices").await {
-            let devices = json["data"]
-                .as_array()
-                .unwrap()
-                .iter()
-                .map(device)
-                .collect();
+        let devices = json["data"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(device)
+            .collect();
 
-            Some(devices)
-        } else {
-            None
-        }
+        Ok(devices)
     }
 
     pub async fn query_samples(
@@ -137,7 +134,7 @@ impl Client {
         access_token: &str,
         user_id: i64,
         sensor: &Sensor,
-    ) -> Option<f64> {
+    ) -> Result<f64> {
         let since_time = sensor.last_update.format("%F %T").to_string();
         debug!("Fetching usage for {} since {}", sensor.id, since_time);
 
@@ -159,9 +156,10 @@ impl Client {
         let query_result = &json["data"][0][since_time];
 
         if query_result.as_array().unwrap().is_empty() {
-            debug!("Sensor {} did not report usage", sensor.id);
+            debug!("Sensor {} did not report any data", sensor.id);
 
-            None
+            // TODO this is probably a query error
+            Ok(0.0)
         } else {
             let new_usage = query_result[0]["value"].as_f64().unwrap();
             debug!(
@@ -169,11 +167,11 @@ impl Client {
                 sensor.id, new_usage
             );
 
-            Some(new_usage)
+            Ok(new_usage)
         }
     }
 
-    pub async fn refresh_token(&self, refresh_token: &str) -> (String, String, Instant) {
+    pub async fn refresh_token(&self, refresh_token: &str) -> Result<(String, String, Instant)> {
         let body = json!({
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
@@ -183,8 +181,7 @@ impl Client {
 
         let json = self
             .post("/oauth/token", None, body, "refresh token")
-            .await
-            .unwrap();
+            .await?;
 
         let data = &json["data"][0];
 
@@ -196,15 +193,13 @@ impl Client {
             .checked_add(Duration::from_secs(expires_in))
             .unwrap();
 
-        (access_token, refresh_token, token_expires_at)
+        Ok((access_token, refresh_token, token_expires_at))
     }
 
-    pub async fn user_id(&self, access_token: &str) -> Option<i64> {
-        if let Some(json) = self.get("/me", Some(access_token), "user id").await {
-            json["data"][0]["id"].as_i64()
-        } else {
-            None
-        }
+    pub async fn user_id(&self, access_token: &str) -> Result<i64> {
+        let json = self.get("/me", Some(access_token), "user id").await?;
+
+        Ok(json["data"][0]["id"].as_i64().unwrap())
     }
 
     async fn get(
@@ -212,7 +207,7 @@ impl Client {
         path: &str,
         access_token: Option<&str>,
         request_name: &str,
-    ) -> Option<serde_json::Value> {
+    ) -> Result<serde_json::Value> {
         let uri = format!("{}{}", API_URI, path);
 
         debug!("GET {}", uri);
@@ -243,7 +238,7 @@ impl Client {
         access_token: Option<&str>,
         body: serde_json::Value,
         request_name: &str,
-    ) -> Option<serde_json::Value> {
+    ) -> Result<serde_json::Value> {
         let uri = format!("{}{}", API_URI, path);
 
         debug!("POST {}", uri);
@@ -275,16 +270,19 @@ impl Client {
     }
 }
 
-async fn deserialize(body: &str, uri: &str, request_name: &str) -> Option<serde_json::Value> {
-    match serde_json::from_str(body).with_context(|| format!("deserialize response from {}", uri)) {
-        Ok(j) => Some(j),
+async fn deserialize(body: &str, uri: &str, request_name: &str) -> Result<serde_json::Value> {
+    let result =
+        serde_json::from_str(body).with_context(|| format!("deserialize response from {}", uri));
+
+    match result {
+        Ok(json) => Ok(json),
         Err(e) => {
             debug!("JSON deserialize error {:?}", e);
             ERRORS
                 .with_label_values(&[&request_name, "deserialize"])
                 .inc();
 
-            None
+            Err(e)
         }
     }
 }
@@ -340,28 +338,29 @@ async fn extract_body(
     uri: &str,
     request_method: &str,
     request_name: &str,
-) -> Option<String> {
+) -> Result<String> {
     let response = match response {
         Ok(r) => r,
         Err(e) => {
             debug!("{} error {:?}", request_method, e);
             ERRORS.with_label_values(&[&request_name, "request"]).inc();
 
-            return None;
+            return Err(e);
         }
     };
 
-    match response
+    let result = response
         .text()
         .await
-        .with_context(|| format!("fetching response body for {}", uri))
-    {
-        Ok(b) => Some(b),
+        .with_context(|| format!("fetching response body for {}", uri));
+
+    match result {
+        Ok(text) => Ok(text),
         Err(e) => {
             debug!("{} body fetch error {:?}", request_method, e);
             ERRORS.with_label_values(&[&request_name, "body"]).inc();
 
-            None
+            Err(e)
         }
     }
 }
@@ -371,10 +370,8 @@ async fn json_from(
     uri: &str,
     request_method: &str,
     request_name: &str,
-) -> Option<serde_json::Value> {
-    let body = extract_body(response, uri, request_method, request_name)
-        .await
-        .unwrap();
+) -> Result<serde_json::Value> {
+    let body = extract_body(response, uri, request_method, request_name).await?;
 
     deserialize(&body, uri, request_name).await
 }

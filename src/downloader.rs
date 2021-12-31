@@ -1,3 +1,6 @@
+use anyhow::Error;
+use anyhow::Result;
+
 use crate::bridge::Bridge;
 use crate::device::Device;
 use crate::flume::Flume;
@@ -95,70 +98,88 @@ impl Downloader {
 
     pub async fn start(mut self) {
         tokio::spawn(async move {
-            self.user_id = self.flume.user_id().await;
-            debug!("user_id: {:?}", self.user_id);
+            match self.flume.user_id().await {
+                Ok(user_id) => {
+                    self.user_id = Some(user_id);
+                    debug!("user_id: {:?}", self.user_id)
+                }
+                Err(e) => self.send_error(e).await,
+            }
 
             loop {
-                self.update().await;
+                match self.update().await {
+                    Ok(_) => (),
+                    Err(e) => self.send_error(e).await,
+                };
 
                 sleep(self.refresh_interval).await;
             }
         });
     }
 
-    async fn update(&mut self) {
-        self.devices().await;
-
-        self.query().await;
+    async fn send_error(&mut self, error: Error) {
+        self.error_tx
+            .send(error)
+            .await
+            .expect("Error propagation failed");
     }
 
-    async fn devices(&mut self) {
+    async fn update(&mut self) -> Result<()> {
+        self.devices().await?;
+
+        self.query().await?;
+
+        Ok(())
+    }
+
+    async fn devices(&mut self) -> Result<bool> {
         let one_hour = Duration::from_secs(3600);
 
         if Instant::now().duration_since(self.devices_last_update) < one_hour {
-            return;
+            return Ok(false);
         }
 
         let mut sensors = Vec::new();
 
-        if let Some(devices) = self.flume.devices(self.user_id.unwrap()).await {
-            debug!("Found {} devices", devices.len());
+        let devices = self.flume.devices(self.user_id.unwrap()).await?;
+        debug!("Found {} devices", devices.len());
 
-            for device in devices {
-                match device {
-                    Device::Bridge(b) => update_bridge(&b),
-                    Device::Sensor(s) => {
-                        update_sensor(&s);
+        for device in devices {
+            match device {
+                Device::Bridge(b) => update_bridge(&b),
+                Device::Sensor(s) => {
+                    update_sensor(&s);
 
-                        sensors.push(s);
-                    }
-                };
-            }
+                    sensors.push(s);
+                }
+            };
         }
 
         self.sensors = Some(sensors);
         self.devices_last_update = Instant::now();
+
+        Ok(true)
     }
 
-    async fn query(&mut self) {
+    async fn query(&mut self) -> Result<()> {
         if let Some(sensors) = &self.sensors {
             let mut updated_sensors = Vec::with_capacity(sensors.len());
 
             let user_id = self.user_id.unwrap();
 
             for sensor in sensors {
-                if let Some(new_usage) = self.flume.query_sensor(user_id, &sensor).await {
-                    debug!("Sensor {} used {} liters", sensor.id, new_usage);
-                    USAGE
-                        .with_label_values(&[&sensor.location])
-                        .inc_by(new_usage);
+                let new_usage = self.flume.query_sensor(user_id, &sensor).await?;
 
-                    updated_sensors.push(sensor.with_updated_timestamp());
-                } else {
-                    updated_sensors.push(sensor.clone());
-                }
+                debug!("Sensor {} used {} liters", sensor.id, new_usage);
+                USAGE
+                    .with_label_values(&[&sensor.location])
+                    .inc_by(new_usage);
+
+                updated_sensors.push(sensor.with_updated_timestamp());
             }
         }
+
+        Ok(())
     }
 }
 
