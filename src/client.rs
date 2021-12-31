@@ -1,3 +1,4 @@
+use anyhow::anyhow;
 use anyhow::Context;
 use anyhow::Result;
 
@@ -106,25 +107,19 @@ impl Client {
 
         let data = &json["data"][0];
 
-        let access_token = data["access_token"].as_str().unwrap().to_string();
-        let refresh_token = data["refresh_token"].as_str().unwrap().to_string();
-        let expires_in = data["expires_in"].as_u64().unwrap();
-
-        Ok((access_token, refresh_token, expires_in, token_fetch_time))
+        access_token(data, token_fetch_time)
     }
 
     pub async fn devices(&mut self, access_token: &str, user_id: i64) -> Result<Vec<Device>> {
         let path = format!("/users/{}/devices?location=true", user_id);
         let json = self.get(&path, Some(access_token), "devices").await?;
 
-        let devices = json["data"]
+        json["data"]
             .as_array()
-            .unwrap()
-            .iter()
+            .context("No devices found")?
+            .into_iter()
             .map(device)
-            .collect();
-
-        Ok(devices)
+            .collect()
     }
 
     pub async fn query_samples(
@@ -147,19 +142,23 @@ impl Client {
 
         let path = format!("/users/{}/devices/{}/query", user_id, sensor.id);
 
-        let json = self
-            .post(&path, Some(access_token), body, "query")
-            .await
-            .unwrap();
+        let json = self.post(&path, Some(access_token), body, "query").await?;
         let query_result = &json["data"][0][since_time];
 
-        if query_result.as_array().unwrap().is_empty() {
+        if query_result
+            .as_array()
+            .with_context(|| format!("Query results for {} are missing", sensor.id))?
+            .is_empty()
+        {
             debug!("Sensor {} did not report any data", sensor.id);
 
             // TODO this is probably a query error
             Ok(0.0)
         } else {
-            let new_usage = query_result[0]["value"].as_f64().unwrap();
+            let new_usage = query_result[0]["value"]
+                .as_f64()
+                .with_context(|| format!("missing query value for sensor {}", sensor.id))?;
+
             debug!(
                 "Sensor {} reported usage of {} liters",
                 sensor.id, new_usage
@@ -188,17 +187,15 @@ impl Client {
 
         let data = &json["data"][0];
 
-        let access_token = data["access_token"].as_str().unwrap().to_string();
-        let refresh_token = data["refresh_token"].as_str().unwrap().to_string();
-        let expires_in = data["expires_in"].as_u64().unwrap();
-
-        Ok((access_token, refresh_token, expires_in, token_fetch_time))
+        access_token(data, token_fetch_time)
     }
 
     pub async fn user_id(&self, access_token: &str) -> Result<i64> {
         let json = self.get("/me", Some(access_token), "user id").await?;
 
-        Ok(json["data"][0]["id"].as_i64().unwrap())
+        let user_id = json["data"][0]["id"].as_i64().context("Missing user_id")?;
+
+        Ok(user_id)
     }
 
     async fn get(
@@ -286,8 +283,8 @@ async fn deserialize(body: &str, uri: &str, request_name: &str) -> Result<serde_
     }
 }
 
-fn device(device: &serde_json::Value) -> Device {
-    let device_type = device["type"].as_u64().unwrap();
+fn device(device: &serde_json::Value) -> Result<Device> {
+    let device_type = device["type"].as_u64().context("Missing device type")?;
 
     match device_type {
         BRIDGE_ID => bridge(device),
@@ -296,41 +293,75 @@ fn device(device: &serde_json::Value) -> Device {
     }
 }
 
-fn bridge(device: &serde_json::Value) -> Device {
-    let location = device["location"]["name"].as_str().unwrap().to_string();
-    let connected = device["connected"].as_bool().unwrap();
-    let product = device["product"].as_str().unwrap().to_string();
+fn bridge(device: &serde_json::Value) -> Result<Device> {
+    let location = device["location"]["name"]
+        .as_str()
+        .context("Missing bridge location name")?
+        .to_string();
+    let connected = device["connected"]
+        .as_bool()
+        .context("Missing bridge connected")?;
+    let product = device["product"]
+        .as_str()
+        .context("Missing bridge product")?
+        .to_string();
 
-    Device::Bridge(Bridge {
+    Ok(Device::Bridge(Bridge {
         location,
         connected,
         product,
-    })
+    }))
 }
 
-fn sensor(device: &serde_json::Value) -> Device {
-    let id = device["id"].as_str().unwrap().to_string();
-    let connected = device["connected"].as_bool().unwrap();
-    let product = device["product"].as_str().unwrap().to_string();
-    let battery_level = device["battery_level"].as_str().unwrap().to_string();
-    let location = device["location"]["name"].as_str().unwrap().to_string();
+fn sensor(device: &serde_json::Value) -> Result<Device> {
+    let id = device["id"]
+        .as_str()
+        .context("Missing sensor id")?
+        .to_string();
+    let connected = device["connected"]
+        .as_bool()
+        .context("Missing sensor connected")?;
+    let product = device["product"]
+        .as_str()
+        .context("Missing sensor product")?
+        .to_string();
+    let battery_level = device["battery_level"]
+        .as_str()
+        .context("Missing sensor battery_level")?
+        .to_string();
+    let location = device["location"]["name"]
+        .as_str()
+        .context("Missing sensor location name")?
+        .to_string();
 
-    let last_seen = device["last_seen"].as_str().unwrap().to_string();
-    let timezone = device["location"]["tz"].as_str().unwrap().to_string();
+    let last_seen = device["last_seen"]
+        .as_str()
+        .context("Missing sensor last_seen")?
+        .to_string();
+    let timezone = device["location"]["tz"]
+        .as_str()
+        .context("Missing sensor location tz")?
+        .to_string();
 
-    let timezone: Tz = timezone.parse().unwrap();
+    let timezone: Tz = match timezone.parse() {
+        Ok(tz) => tz,
+        Err(_) => {
+            return Err(anyhow!("Unknown sensor timezone {}", timezone));
+        }
+    };
+
     let last_update = DateTime::parse_from_rfc3339(&last_seen)
-        .unwrap()
+        .with_context(|| format!("Unable to parse last seen time {}", last_seen))?
         .with_timezone(&timezone);
 
-    Device::Sensor(Sensor {
+    Ok(Device::Sensor(Sensor {
         id,
         location,
         product,
         connected,
         battery_level,
         last_update,
-    })
+    }))
 }
 async fn extract_body(
     response: Result<reqwest::Response, anyhow::Error>,
@@ -362,6 +393,23 @@ async fn extract_body(
             Err(e)
         }
     }
+}
+
+fn access_token(
+    json: &serde_json::Value,
+    fetch_time: Instant,
+) -> Result<(String, String, u64, Instant)> {
+    let access_token = json["access_token"]
+        .as_str()
+        .context("missing access_token")?
+        .to_string();
+    let refresh_token = json["refresh_token"]
+        .as_str()
+        .context("missing refresh_token")?
+        .to_string();
+    let expires_in = json["expires_in"].as_u64().context("missing expires_in")?;
+
+    Ok((access_token, refresh_token, expires_in, fetch_time))
 }
 
 async fn json_from(
