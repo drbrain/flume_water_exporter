@@ -21,7 +21,6 @@ use prometheus::IntCounterVec;
 
 use serde_json::json;
 
-use std::time::Duration;
 use std::time::Instant;
 
 lazy_static! {
@@ -89,7 +88,9 @@ impl Client {
         &mut self,
         username: &str,
         password: &str,
-    ) -> Result<(String, String, Instant)> {
+    ) -> Result<(String, String, u64, Instant)> {
+        let token_fetch_time = Instant::now();
+
         let body = json!({
             "grant_type": "password",
             "client_id": self.client_id,
@@ -108,11 +109,8 @@ impl Client {
         let access_token = data["access_token"].as_str().unwrap().to_string();
         let refresh_token = data["refresh_token"].as_str().unwrap().to_string();
         let expires_in = data["expires_in"].as_u64().unwrap();
-        let token_expires_at = Instant::now()
-            .checked_add(Duration::from_secs(expires_in))
-            .unwrap();
 
-        Ok((access_token, refresh_token, token_expires_at))
+        Ok((access_token, refresh_token, expires_in, token_fetch_time))
     }
 
     pub async fn devices(&mut self, access_token: &str, user_id: i64) -> Result<Vec<Device>> {
@@ -171,7 +169,12 @@ impl Client {
         }
     }
 
-    pub async fn refresh_token(&self, refresh_token: &str) -> Result<(String, String, Instant)> {
+    pub async fn refresh_token(
+        &self,
+        refresh_token: &str,
+    ) -> Result<(String, String, u64, Instant)> {
+        let token_fetch_time = Instant::now();
+
         let body = json!({
             "grant_type": "refresh_token",
             "refresh_token": refresh_token,
@@ -189,11 +192,7 @@ impl Client {
         let refresh_token = data["refresh_token"].as_str().unwrap().to_string();
         let expires_in = data["expires_in"].as_u64().unwrap();
 
-        let token_expires_at = Instant::now()
-            .checked_add(Duration::from_secs(expires_in))
-            .unwrap();
-
-        Ok((access_token, refresh_token, token_expires_at))
+        Ok((access_token, refresh_token, expires_in, token_fetch_time))
     }
 
     pub async fn user_id(&self, access_token: &str) -> Result<i64> {

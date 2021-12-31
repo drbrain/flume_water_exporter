@@ -4,6 +4,7 @@ use crate::client::Client;
 use crate::device::Device;
 use crate::sensor::Sensor;
 
+use std::time::Duration;
 use std::time::Instant;
 
 #[derive(Clone)]
@@ -12,7 +13,8 @@ pub struct Flume {
 
     pub access_token: String,
     pub refresh_token: String,
-    pub token_expires_at: Instant,
+    pub token_expires_in: u64,
+    pub token_fetch_time: Instant,
 }
 
 impl Flume {
@@ -31,16 +33,19 @@ impl Flume {
     }
 
     async fn refresh_token_if_expired(&mut self) -> Result<bool> {
-        if Instant::now() < self.token_expires_at {
+        let expiry = Duration::from_secs(self.token_expires_in);
+
+        if Instant::now().duration_since(self.token_fetch_time) < expiry {
             return Ok(false);
         };
 
-        let (access_token, refresh_token, token_expires_at) =
+        let (access_token, refresh_token, expires_in, token_fetch_time) =
             self.client.refresh_token(&self.refresh_token).await?;
 
         self.access_token = access_token;
         self.refresh_token = refresh_token;
-        self.token_expires_at = token_expires_at;
+        self.token_expires_in = expires_in;
+        self.token_fetch_time = token_fetch_time;
 
         Ok(true)
     }
