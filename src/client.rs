@@ -137,6 +137,7 @@ impl Client {
         sensor: &Sensor,
     ) -> Option<f64> {
         let since_time = sensor.last_update.format("%F %T").to_string();
+        debug!("Fetching usage for {} since {}", sensor.id, since_time);
 
         let body = json!({
             "queries": [{
@@ -156,11 +157,20 @@ impl Client {
         let query_result = &json["data"][0][since_time];
 
         if query_result.as_array().unwrap().is_empty() {
+            debug!("Sensor {} did not report usage", sensor.id);
+
             None
         } else {
-            Some(query_result[0]["value"].as_f64().unwrap())
+            let new_usage = query_result[0]["value"].as_f64().unwrap();
+            debug!(
+                "Sensor {} reported usage of {} liters",
+                sensor.id, new_usage
+            );
+
+            Some(new_usage)
         }
     }
+
     pub async fn refresh_token(&self, refresh_token: &str) -> (String, String, Instant) {
         let body = json!({
             "grant_type": "refresh_token",
