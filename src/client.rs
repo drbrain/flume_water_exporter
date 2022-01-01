@@ -319,8 +319,8 @@ impl Client {
         let uri = format!("{}{}", API_URI, path);
 
         debug!("GET {}", uri);
-        REQUESTS.with_label_values(&[&request_name]).inc();
-        let timer = DURATIONS.with_label_values(&[&request_name]).start_timer();
+        REQUESTS.with_label_values(&[request_name]).inc();
+        let timer = DURATIONS.with_label_values(&[request_name]).start_timer();
 
         let builder = self.client.get(&uri).header("Accept", "application/json");
 
@@ -351,8 +351,8 @@ impl Client {
 
         debug!("POST {}", uri);
 
-        REQUESTS.with_label_values(&[&request_name]).inc();
-        let timer = DURATIONS.with_label_values(&[&request_name]).start_timer();
+        REQUESTS.with_label_values(&[request_name]).inc();
+        let timer = DURATIONS.with_label_values(&[request_name]).start_timer();
 
         let builder = self
             .client
@@ -387,7 +387,7 @@ fn deserialize(body: &str, uri: &str, request_name: &str) -> Result<Response> {
         Err(e) => {
             debug!("JSON deserialize error {:?} for {}", e, body);
             ERRORS
-                .with_label_values(&[&request_name, "deserialize"])
+                .with_label_values(&[request_name, "deserialize"])
                 .inc();
 
             Err(e)
@@ -413,7 +413,7 @@ async fn extract_body(
         Ok(r) => r,
         Err(e) => {
             debug!("{} error {:?}", request_method, e);
-            ERRORS.with_label_values(&[&request_name, "request"]).inc();
+            ERRORS.with_label_values(&[request_name, "request"]).inc();
 
             return Err(e);
         }
@@ -428,7 +428,7 @@ async fn extract_body(
         Ok(text) => Ok(text),
         Err(e) => {
             debug!("{} body fetch error {:?}", request_method, e);
-            ERRORS.with_label_values(&[&request_name, "body"]).inc();
+            ERRORS.with_label_values(&[request_name, "body"]).inc();
 
             Err(e)
         }

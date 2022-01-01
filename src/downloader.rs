@@ -174,13 +174,13 @@ impl Downloader {
             let mut updated_sensors = Vec::with_capacity(sensors.len());
 
             for sensor in sensors {
-                let new_usage = self.flume.query_sensor(user_id, &sensor).await?;
+                let new_usage = self.flume.query_sensor(user_id, sensor).await?;
 
                 let id = &sensor.sensor.id;
                 let location = &sensor.sensor.location.as_ref().unwrap().name;
 
                 debug!("Sensor {} used {} liters", id, new_usage);
-                USAGE.with_label_values(&[&location]).inc_by(new_usage);
+                USAGE.with_label_values(&[location]).inc_by(new_usage);
 
                 updated_sensors.push(sensor.with_updated_timestamp());
             }
