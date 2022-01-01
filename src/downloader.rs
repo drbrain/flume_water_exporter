@@ -70,7 +70,8 @@ lazy_static! {
 
 pub struct Downloader {
     error_tx: Sender,
-    refresh_interval: Duration,
+    device_interval: Duration,
+    query_interval: Duration,
 
     flume: Flume,
 
@@ -80,10 +81,16 @@ pub struct Downloader {
 }
 
 impl Downloader {
-    pub fn new(flume: Flume, refresh_interval: Duration, error_tx: Sender) -> Self {
+    pub fn new(
+        flume: Flume,
+        device_interval: Duration,
+        query_interval: Duration,
+        error_tx: Sender,
+    ) -> Self {
         Downloader {
             error_tx,
-            refresh_interval,
+            device_interval,
+            query_interval,
 
             flume,
 
@@ -102,7 +109,7 @@ impl Downloader {
                     Err(e) => self.handle_error(e).await,
                 };
 
-                sleep(self.refresh_interval).await;
+                sleep(self.query_interval).await;
             }
         });
     }
@@ -151,9 +158,7 @@ impl Downloader {
 
     async fn devices(&mut self) -> Result<bool> {
         if let Some(last_update) = self.devices_last_update {
-            let one_hour = Duration::from_secs(3600);
-
-            if Instant::now().duration_since(last_update) < one_hour {
+            if Instant::now().duration_since(last_update) < self.device_interval {
                 return Ok(false);
             }
         }

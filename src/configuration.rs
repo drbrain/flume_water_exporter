@@ -13,8 +13,9 @@ pub struct Configuration {
     secret_id: String,
     username: String,
     password: String,
-    refresh_interval: Option<u64>,
-    refresh_timeout: Option<u64>,
+    query_interval: Option<u64>,
+    device_interval: Option<u64>,
+    flume_timeout: Option<u64>,
 }
 
 impl Configuration {
@@ -61,18 +62,29 @@ impl Configuration {
         self.password.clone()
     }
 
-    /// Interval between fetching data from Flume.
+    /// Interval between fetching device data (bridge and sensor connected, battery level) from
+    /// Flume in seconds.
     ///
-    /// Defaults to 60 seconds, the Flume Water API has a rate limit of 120 requests per hour.
-    pub fn refresh_interval(&self) -> std::time::Duration {
-        let interval = self.refresh_interval.unwrap_or(60_000);
+    /// Defaults to 5 minutes, the Flume Water API has a rate limit of 120 requests per hour.
+    pub fn device_interval(&self) -> std::time::Duration {
+        let interval = self.device_interval.unwrap_or(300);
 
-        std::time::Duration::from_millis(interval)
+        std::time::Duration::from_secs(interval)
     }
 
-    /// Timeout to wait for the Flume API to respond.  Defaults to 10s.
-    pub fn refresh_timeout(&self) -> std::time::Duration {
-        let timeout = self.refresh_timeout.unwrap_or(10_000);
+    /// Interval between querying usage data from Flume in seconds.
+    ///
+    /// Defaults to 60 seconds, the Flume Water API has a rate limit of 120 requests per hour.
+    /// Reduce this interval if you have multiple sensors.
+    pub fn query_interval(&self) -> std::time::Duration {
+        let interval = self.query_interval.unwrap_or(60);
+
+        std::time::Duration::from_secs(interval)
+    }
+
+    /// Timeout to wait for the Flume API to respond in milliseconds.  Defaults to 1s.
+    pub fn flume_timeout(&self) -> std::time::Duration {
+        let timeout = self.flume_timeout.unwrap_or(1_000);
 
         std::time::Duration::from_millis(timeout)
     }

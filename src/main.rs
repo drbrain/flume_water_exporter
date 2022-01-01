@@ -32,9 +32,14 @@ async fn main() -> Result<()> {
         .build()
         .await?;
 
-    Downloader::new(flume, configuration.refresh_interval(), error_tx.clone())
-        .start()
-        .await;
+    Downloader::new(
+        flume,
+        configuration.device_interval(),
+        configuration.query_interval(),
+        error_tx.clone(),
+    )
+    .start()
+    .await;
 
     Exporter::new(configuration.bind_address())?
         .start(error_tx.clone())

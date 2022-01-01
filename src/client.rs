@@ -163,7 +163,7 @@ pub struct Client {
 
 impl Client {
     pub fn new(configuration: &Configuration) -> Self {
-        let timeout = configuration.refresh_timeout();
+        let timeout = configuration.flume_timeout();
 
         let mut default_headers = reqwest::header::HeaderMap::new();
         default_headers.insert(
