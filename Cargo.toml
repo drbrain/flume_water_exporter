@@ -1,5 +1,6 @@
 [package]
 name = "flume_water_exporter"
+authors = ["Eric Hodel"]
 version = "0.1.0"
 edition = "2021"
 
