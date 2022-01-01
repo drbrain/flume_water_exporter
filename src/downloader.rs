@@ -133,6 +133,10 @@ impl Downloader {
     }
 
     async fn user_id(&mut self) -> Result<i64> {
+        if let Some(user_id) = self.user_id {
+            return Ok(user_id);
+        }
+
         match self.flume.user_id().await {
             Ok(user_id) => {
                 self.user_id = Some(user_id);
