@@ -234,7 +234,6 @@ impl Client {
         last_update: DateTime<Tz>,
     ) -> Result<f64> {
         let since_time = last_update.format("%F %T").to_string();
-        debug!("Fetching usage for {} since {}", sensor.id, since_time);
 
         let body = json!({
             "queries": [{
@@ -259,17 +258,8 @@ impl Client {
 
         if let Some(results) = query_result.get(&since_time) {
             if let Some(result) = results.get(0) {
-                let new_usage = result.value;
-
-                debug!(
-                    "Sensor {} reported usage of {} liters",
-                    sensor.id, new_usage
-                );
-
-                Ok(new_usage)
+                Ok(result.value)
             } else {
-                debug!("Sensor {} reported no new usage", sensor.id);
-
                 Ok(0.0)
             }
         } else {
