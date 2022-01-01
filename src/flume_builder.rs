@@ -16,7 +16,7 @@ impl FlumeBuilder {
     pub async fn build(self) -> Result<Flume> {
         let mut client = Client::new(&self.configuration);
 
-        let (access_token, refresh_token, token_expires_in, token_fetch_time) = client
+        let (token, token_fetch_time) = client
             .access_token(
                 &self.configuration.username(),
                 &self.configuration.password(),
@@ -26,9 +26,9 @@ impl FlumeBuilder {
         Ok(Flume {
             client,
 
-            access_token,
-            refresh_token,
-            token_expires_in,
+            access_token: token.access_token,
+            refresh_token: token.refresh_token,
+            token_expires_in: token.expires_in,
             token_fetch_time,
         })
     }

@@ -176,10 +176,11 @@ impl Downloader {
             for sensor in sensors {
                 let new_usage = self.flume.query_sensor(user_id, &sensor).await?;
 
-                debug!("Sensor {} used {} liters", sensor.id, new_usage);
-                USAGE
-                    .with_label_values(&[&sensor.location])
-                    .inc_by(new_usage);
+                let id = &sensor.sensor.id;
+                let location = &sensor.sensor.location.as_ref().unwrap().name;
+
+                debug!("Sensor {} used {} liters", id, new_usage);
+                USAGE.with_label_values(&[&location]).inc_by(new_usage);
 
                 updated_sensors.push(sensor.with_updated_timestamp());
             }
@@ -203,7 +204,8 @@ fn update_bridge(bridge: &Bridge) {
 }
 
 fn update_sensor(sensor: &Sensor) {
-    let location = &sensor.location;
+    let sensor = &sensor.sensor;
+    let location = &sensor.location.as_ref().unwrap().name;
     let product = &sensor.product;
 
     let connected = if sensor.connected { 1.0 } else { 0.0 };

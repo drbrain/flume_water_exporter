@@ -3,13 +3,9 @@ use anyhow::Context;
 use anyhow::Result;
 
 use chrono::DateTime;
-
 use chrono_tz::Tz;
 
-use crate::bridge::Bridge;
 use crate::configuration::Configuration;
-use crate::device::Device;
-use crate::sensor::Sensor;
 
 use lazy_static::lazy_static;
 
@@ -20,8 +16,11 @@ use prometheus::register_int_counter_vec;
 use prometheus::HistogramVec;
 use prometheus::IntCounterVec;
 
+use serde::Deserialize;
+use serde::Serialize;
 use serde_json::json;
 
+use std::collections::HashMap;
 use std::time::Instant;
 
 lazy_static! {
@@ -46,8 +45,113 @@ lazy_static! {
 }
 
 const API_URI: &str = "https://api.flumewater.com";
-const BRIDGE_ID: u64 = 1;
-const SENSOR_ID: u64 = 2;
+
+#[derive(Clone, Deserialize, Serialize)]
+pub struct Response {
+    pub success: bool,
+    pub code: u64,
+    pub message: String,
+    pub http_code: u64,
+    pub http_message: String,
+    pub detailed: serde_json::Value,
+    pub data: Vec<Data>,
+    pub count: u64,
+    pub pagination: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(untagged)]
+pub enum Data {
+    Bridge(Bridge),
+    Sensor(Sensor),
+    Token(Token),
+    User(User),
+    QueryResults(HashMap<String, Vec<QueryResult>>),
+}
+
+#[derive(Clone, Debug)]
+pub enum Device {
+    Bridge(Bridge),
+    Sensor(Sensor),
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Bridge {
+    pub id: String,
+    pub last_seen: String,
+    pub connected: bool,
+    pub supports_ap: bool,
+    pub product: String,
+    pub user: Option<User>,
+    pub location: Option<Location>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Location {
+    pub id: u64,
+    pub name: String,
+    pub primary_location: bool,
+    pub address: String,
+    pub address_2: String,
+    pub city: String,
+    pub state: String,
+    pub postal_code: String,
+    pub country: String,
+    pub tz: String,
+    pub installation: String,
+    pub away_mode: bool,
+    pub usage_profile: UsageProfile,
+    pub user: Option<User>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct QueryResult {
+    pub value: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Sensor {
+    pub id: String,
+    pub bridge_id: String,
+    pub oriented: bool,
+    pub last_seen: String,
+    pub connected: bool,
+    pub battery_level: String,
+    pub product: String,
+    pub user: Option<User>,
+    pub location: Option<Location>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Token {
+    pub token_type: String,
+    pub access_token: String,
+    pub expires_in: u64,
+    pub refresh_token: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct UsageProfile {
+    id: u64,
+    score: u64,
+    residents: String,
+    bathrooms: String,
+    irrigation: String,
+    irrigation_freq: String,
+    irrigation_max_cycle: u64,
+    has_pool: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct User {
+    pub id: i64,
+    email_address: String,
+    first_name: String,
+    phone: String,
+    status: String,
+    #[serde(rename(deserialize = "type"))]
+    user_type: String,
+}
 
 #[derive(Clone)]
 pub struct Client {
@@ -89,7 +193,7 @@ impl Client {
         &mut self,
         username: &str,
         password: &str,
-    ) -> Result<(String, String, u64, Instant)> {
+    ) -> Result<(Token, Instant)> {
         let token_fetch_time = Instant::now();
 
         let body = json!({
@@ -100,26 +204,26 @@ impl Client {
             "password": password,
         });
 
-        let json = self
+        let response = self
             .post("/oauth/token", None, body, "authenticate")
             .await
             .context("Authentication failed")?;
 
-        let data = &json["data"][0];
+        let token = match &response.data[0] {
+            Data::Token(t) => t.clone(),
+            _ => {
+                return Err(anyhow!("Unexpected response type while refreshing token"));
+            }
+        };
 
-        access_token(data, token_fetch_time)
+        Ok((token, token_fetch_time))
     }
 
     pub async fn devices(&mut self, access_token: &str, user_id: i64) -> Result<Vec<Device>> {
         let path = format!("/users/{}/devices?location=true", user_id);
-        let json = self.get(&path, Some(access_token), "devices").await?;
+        let response = self.get(&path, Some(access_token), "devices").await?;
 
-        json["data"]
-            .as_array()
-            .context("No devices found")?
-            .into_iter()
-            .map(device)
-            .collect()
+        response.data.iter().map(device).collect()
     }
 
     pub async fn query_samples(
@@ -127,8 +231,9 @@ impl Client {
         access_token: &str,
         user_id: i64,
         sensor: &Sensor,
+        last_update: DateTime<Tz>,
     ) -> Result<f64> {
-        let since_time = sensor.last_update.format("%F %T").to_string();
+        let since_time = last_update.format("%F %T").to_string();
         debug!("Fetching usage for {} since {}", sensor.id, since_time);
 
         let body = json!({
@@ -142,36 +247,37 @@ impl Client {
 
         let path = format!("/users/{}/devices/{}/query", user_id, sensor.id);
 
-        let json = self.post(&path, Some(access_token), body, "query").await?;
-        let query_result = &json["data"][0][since_time];
+        let response = self.post(&path, Some(access_token), body, "query").await?;
+        let query_results = &response.data[0];
 
-        if query_result
-            .as_array()
-            .with_context(|| format!("Query results for {} are missing", sensor.id))?
-            .is_empty()
-        {
-            debug!("Sensor {} did not report any data", sensor.id);
+        let query_result = match query_results {
+            Data::QueryResults(q) => q,
+            _ => {
+                return Err(anyhow!("Unexpected response type querying sensor"));
+            }
+        };
 
-            // TODO this is probably a query error
-            Ok(0.0)
+        if let Some(results) = query_result.get(&since_time) {
+            if let Some(result) = results.get(0) {
+                let new_usage = result.value;
+
+                debug!(
+                    "Sensor {} reported usage of {} liters",
+                    sensor.id, new_usage
+                );
+
+                Ok(new_usage)
+            } else {
+                debug!("Sensor {} reported no new usage", sensor.id);
+
+                Ok(0.0)
+            }
         } else {
-            let new_usage = query_result[0]["value"]
-                .as_f64()
-                .with_context(|| format!("missing query value for sensor {}", sensor.id))?;
-
-            debug!(
-                "Sensor {} reported usage of {} liters",
-                sensor.id, new_usage
-            );
-
-            Ok(new_usage)
+            Err(anyhow!("Missing query result {}", since_time))
         }
     }
 
-    pub async fn refresh_token(
-        &self,
-        refresh_token: &str,
-    ) -> Result<(String, String, u64, Instant)> {
+    pub async fn refresh_token(&self, refresh_token: &str) -> Result<(Token, Instant)> {
         let token_fetch_time = Instant::now();
 
         let body = json!({
@@ -181,21 +287,27 @@ impl Client {
             "client_secret": self.client_secret,
         });
 
-        let json = self
+        let response = self
             .post("/oauth/token", None, body, "refresh token")
             .await?;
 
-        let data = &json["data"][0];
+        let token = match &response.data[0] {
+            Data::Token(t) => t.clone(),
+            _ => {
+                return Err(anyhow!("Unexpected response type while refreshing token"));
+            }
+        };
 
-        access_token(data, token_fetch_time)
+        Ok((token, token_fetch_time))
     }
 
     pub async fn user_id(&self, access_token: &str) -> Result<i64> {
-        let json = self.get("/me", Some(access_token), "user id").await?;
+        let response = self.get("/me", Some(access_token), "user id").await?;
 
-        let user_id = json["data"][0]["id"].as_i64().context("Missing user_id")?;
-
-        Ok(user_id)
+        match &response.data[0] {
+            Data::User(u) => Ok(u.id),
+            _ => Err(anyhow!("Could not find user in response")),
+        }
     }
 
     async fn get(
@@ -203,7 +315,7 @@ impl Client {
         path: &str,
         access_token: Option<&str>,
         request_name: &str,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<Response> {
         let uri = format!("{}{}", API_URI, path);
 
         debug!("GET {}", uri);
@@ -234,7 +346,7 @@ impl Client {
         access_token: Option<&str>,
         body: serde_json::Value,
         request_name: &str,
-    ) -> Result<serde_json::Value> {
+    ) -> Result<Response> {
         let uri = format!("{}{}", API_URI, path);
 
         debug!("POST {}", uri);
@@ -266,14 +378,14 @@ impl Client {
     }
 }
 
-async fn deserialize(body: &str, uri: &str, request_name: &str) -> Result<serde_json::Value> {
+fn deserialize(body: &str, uri: &str, request_name: &str) -> Result<Response> {
     let result =
         serde_json::from_str(body).with_context(|| format!("deserialize response from {}", uri));
 
     match result {
         Ok(json) => Ok(json),
         Err(e) => {
-            debug!("JSON deserialize error {:?}", e);
+            debug!("JSON deserialize error {:?} for {}", e, body);
             ERRORS
                 .with_label_values(&[&request_name, "deserialize"])
                 .inc();
@@ -283,86 +395,14 @@ async fn deserialize(body: &str, uri: &str, request_name: &str) -> Result<serde_
     }
 }
 
-fn device(device: &serde_json::Value) -> Result<Device> {
-    let device_type = device["type"].as_u64().context("Missing device type")?;
-
-    match device_type {
-        BRIDGE_ID => bridge(device),
-        SENSOR_ID => sensor(device),
-        _ => unreachable!("unknown device type {}", device_type),
+fn device(data: &Data) -> Result<Device> {
+    match data {
+        Data::Bridge(b) => Ok(Device::Bridge(b.clone())),
+        Data::Sensor(s) => Ok(Device::Sensor(s.clone())),
+        _ => Err(anyhow!("Unable to find device in response")),
     }
 }
 
-fn bridge(device: &serde_json::Value) -> Result<Device> {
-    let location = device["location"]["name"]
-        .as_str()
-        .context("Missing bridge location name")?
-        .to_string();
-    let connected = device["connected"]
-        .as_bool()
-        .context("Missing bridge connected")?;
-    let product = device["product"]
-        .as_str()
-        .context("Missing bridge product")?
-        .to_string();
-
-    Ok(Device::Bridge(Bridge {
-        location,
-        connected,
-        product,
-    }))
-}
-
-fn sensor(device: &serde_json::Value) -> Result<Device> {
-    let id = device["id"]
-        .as_str()
-        .context("Missing sensor id")?
-        .to_string();
-    let connected = device["connected"]
-        .as_bool()
-        .context("Missing sensor connected")?;
-    let product = device["product"]
-        .as_str()
-        .context("Missing sensor product")?
-        .to_string();
-    let battery_level = device["battery_level"]
-        .as_str()
-        .context("Missing sensor battery_level")?
-        .to_string();
-    let location = device["location"]["name"]
-        .as_str()
-        .context("Missing sensor location name")?
-        .to_string();
-
-    let last_seen = device["last_seen"]
-        .as_str()
-        .context("Missing sensor last_seen")?
-        .to_string();
-    let timezone = device["location"]["tz"]
-        .as_str()
-        .context("Missing sensor location tz")?
-        .to_string();
-
-    let timezone: Tz = match timezone.parse() {
-        Ok(tz) => tz,
-        Err(_) => {
-            return Err(anyhow!("Unknown sensor timezone {}", timezone));
-        }
-    };
-
-    let last_update = DateTime::parse_from_rfc3339(&last_seen)
-        .with_context(|| format!("Unable to parse last seen time {}", last_seen))?
-        .with_timezone(&timezone);
-
-    Ok(Device::Sensor(Sensor {
-        id,
-        location,
-        product,
-        connected,
-        battery_level,
-        last_update,
-    }))
-}
 async fn extract_body(
     response: Result<reqwest::Response, anyhow::Error>,
     uri: &str,
@@ -395,30 +435,13 @@ async fn extract_body(
     }
 }
 
-fn access_token(
-    json: &serde_json::Value,
-    fetch_time: Instant,
-) -> Result<(String, String, u64, Instant)> {
-    let access_token = json["access_token"]
-        .as_str()
-        .context("missing access_token")?
-        .to_string();
-    let refresh_token = json["refresh_token"]
-        .as_str()
-        .context("missing refresh_token")?
-        .to_string();
-    let expires_in = json["expires_in"].as_u64().context("missing expires_in")?;
-
-    Ok((access_token, refresh_token, expires_in, fetch_time))
-}
-
 async fn json_from(
     response: Result<reqwest::Response, anyhow::Error>,
     uri: &str,
     request_method: &str,
     request_name: &str,
-) -> Result<serde_json::Value> {
+) -> Result<Response> {
     let body = extract_body(response, uri, request_method, request_name).await?;
 
-    deserialize(&body, uri, request_name).await
+    deserialize(&body, uri, request_name)
 }
