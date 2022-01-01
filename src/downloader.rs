@@ -10,6 +10,7 @@ use crate::sensor::Sensor;
 use lazy_static::lazy_static;
 
 use log::debug;
+use log::error;
 
 use prometheus::register_counter_vec;
 use prometheus::register_gauge_vec;
@@ -98,7 +99,7 @@ impl Downloader {
             loop {
                 match self.update().await {
                     Ok(_) => (),
-                    Err(e) => self.send_error(e).await,
+                    Err(e) => self.handle_error(e).await,
                 };
 
                 sleep(self.refresh_interval).await;
@@ -106,7 +107,17 @@ impl Downloader {
         });
     }
 
-    async fn send_error(&mut self, error: Error) {
+    async fn handle_error(&mut self, error: Error) {
+        for cause in error.chain() {
+            if let Some(e) = cause.downcast_ref::<reqwest::Error>() {
+                if e.is_timeout() || e.is_request() || e.is_connect() {
+                    error!("Ignoring error {:?}", error);
+
+                    return;
+                }
+            }
+        }
+
         self.error_tx
             .send(error)
             .await
@@ -127,7 +138,7 @@ impl Downloader {
                 self.user_id = Some(user_id);
                 debug!("user_id: {:?}", self.user_id)
             }
-            Err(e) => self.send_error(e).await,
+            Err(e) => self.handle_error(e).await,
         }
 
         self.user_id
