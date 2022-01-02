@@ -433,5 +433,11 @@ async fn json_from(
 ) -> Result<Response> {
     let body = extract_body(response, uri, request_method, request_name).await?;
 
-    deserialize(&body, uri, request_name)
+    let result = deserialize(&body, uri, request_name)?;
+
+    if !result.success {
+        Err(anyhow!("request error {}", result.message))
+    } else {
+        Ok(result)
+    }
 }
