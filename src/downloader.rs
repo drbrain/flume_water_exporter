@@ -204,6 +204,8 @@ impl Downloader {
 
                 updated_sensors.push(sensor.with_updated_timestamp(until_time));
             }
+
+            self.sensors = Some(updated_sensors);
         }
 
         Ok(())
