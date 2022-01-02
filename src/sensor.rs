@@ -3,13 +3,11 @@ use anyhow::Context;
 use anyhow::Result;
 
 use chrono::DateTime;
-use chrono::Utc;
 use chrono_tz::Tz;
 
 use crate::client;
 
 use std::convert::TryFrom;
-use std::time::SystemTime;
 
 #[derive(Clone)]
 pub struct Sensor {
@@ -18,11 +16,7 @@ pub struct Sensor {
 }
 
 impl Sensor {
-    pub fn with_updated_timestamp(&self) -> Sensor {
-        let timezone = self.last_update.timezone();
-        let now: DateTime<Utc> = SystemTime::now().into();
-        let last_update = now.with_timezone(&timezone);
-
+    pub fn with_updated_timestamp(&self, last_update: DateTime<Tz>) -> Sensor {
         Sensor {
             sensor: self.sensor.clone(),
             last_update,

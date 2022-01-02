@@ -1,5 +1,9 @@
 use anyhow::Result;
 
+use chrono::offset::Utc;
+use chrono::DateTime;
+use chrono_tz::Tz;
+
 use crate::client;
 use crate::client::Client;
 use crate::device::Device;
@@ -30,17 +34,35 @@ impl Flume {
             .collect()
     }
 
-    pub async fn query_sensor(&mut self, user_id: i64, sensor: &Sensor) -> Result<f64> {
+    pub async fn query_sensor(
+        &mut self,
+        user_id: i64,
+        sensor: &Sensor,
+    ) -> Result<(f64, DateTime<Tz>)> {
         self.refresh_token_if_expired().await?;
 
-        self.client
-            .query_samples(
-                &self.access_token,
-                user_id,
-                &sensor.sensor,
-                sensor.last_update,
-            )
-            .await
+        let last_update = sensor.last_update;
+        let timezone = last_update.timezone();
+        let since_datetime = last_update.format("%F %H:%M:00").to_string();
+        let now = Utc::now().with_timezone(&timezone);
+        let until_datetime = Some(now.format("%F %H:%M:00").to_string());
+
+        let query = client::Query {
+            request_id: since_datetime.clone(),
+            bucket: client::QueryBucket::MIN,
+            since_datetime,
+            until_datetime,
+            operation: Some(client::QueryOperation::SUM),
+            units: Some(client::QueryUnits::LITERS),
+            ..Default::default()
+        };
+
+        let new_usage = self
+            .client
+            .query_samples(&self.access_token, user_id, &sensor.sensor.id, query)
+            .await?;
+
+        Ok((new_usage, now))
     }
 
     async fn refresh_token_if_expired(&mut self) -> Result<bool> {

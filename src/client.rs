@@ -2,9 +2,6 @@ use anyhow::anyhow;
 use anyhow::Context;
 use anyhow::Result;
 
-use chrono::DateTime;
-use chrono_tz::Tz;
-
 use crate::configuration::Configuration;
 
 use lazy_static::lazy_static;
@@ -107,6 +104,75 @@ pub struct Location {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct QueryResult {
     pub value: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Queries {
+    queries: Vec<Query>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Query {
+    pub request_id: String,
+    pub bucket: QueryBucket,
+    pub since_datetime: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub until_datetime: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub group_multiplier: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operation: Option<QueryOperation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub sort_direction: Option<QuerySortDirection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub units: Option<QueryUnits>,
+}
+
+impl Default for Query {
+    fn default() -> Self {
+        Query {
+            request_id: "".to_string(),
+            bucket: QueryBucket::MIN,
+            since_datetime: "".to_string(),
+            until_datetime: None,
+            group_multiplier: None,
+            operation: None,
+            sort_direction: None,
+            units: None,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum QueryBucket {
+    MIN = 3,
+    HR = 4,
+    DAY = 5,
+    MON = 7,
+    YR = 8,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum QueryOperation {
+    SUM = 1,
+    AVG = 2,
+    MIN = 3,
+    MAX = 4,
+    CNT = 5,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum QuerySortDirection {
+    ASC,
+    DESC,
+}
+#[allow(non_camel_case_types)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum QueryUnits {
+    GALLONS,
+    LITERS,
+    CUBIC_FEET,
+    CUBIC_METERS,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -230,21 +296,20 @@ impl Client {
         &self,
         access_token: &str,
         user_id: i64,
-        sensor: &Sensor,
-        last_update: DateTime<Tz>,
+        sensor_id: &str,
+        query: Query,
     ) -> Result<f64> {
-        let since_time = last_update.format("%F %T").to_string();
+        let request_id = query.request_id.clone();
 
-        let body = json!({
-            "queries": [{
-                "request_id": since_time,
-                "bucket": "MIN",
-                "since_datetime": since_time,
-                "operation": "SUM",
-            }]
-        });
+        let queries = Queries {
+            queries: vec![query],
+        };
 
-        let path = format!("/users/{}/devices/{}/query", user_id, sensor.id);
+        let body = serde_json::to_string(&queries)?;
+
+        debug!("query: {}", body);
+
+        let path = format!("/users/{}/devices/{}/query", user_id, sensor_id);
 
         let response = self.post(&path, Some(access_token), body, "query").await?;
         let query_results = &response.data[0];
@@ -256,14 +321,14 @@ impl Client {
             }
         };
 
-        if let Some(results) = query_result.get(&since_time) {
+        if let Some(results) = query_result.get(&request_id) {
             if let Some(result) = results.get(0) {
                 Ok(result.value)
             } else {
                 Ok(0.0)
             }
         } else {
-            Err(anyhow!("Missing query result {}", since_time))
+            Err(anyhow!("Missing query result {}", request_id))
         }
     }
 
@@ -330,11 +395,11 @@ impl Client {
         json_from(response, &uri, "GET", request_name).await
     }
 
-    async fn post(
+    async fn post<T: ToString>(
         &self,
         path: &str,
         access_token: Option<&str>,
-        body: serde_json::Value,
+        body: T,
         request_name: &str,
     ) -> Result<Response> {
         let uri = format!("{}{}", API_URI, path);
