@@ -15,7 +15,6 @@ use prometheus::IntCounterVec;
 
 use serde::Deserialize;
 use serde::Serialize;
-use serde_json::json;
 
 use std::collections::HashMap;
 use std::time::Instant;
@@ -54,6 +53,15 @@ pub struct Response {
     pub data: Vec<Data>,
     pub count: u64,
     pub pagination: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct AccessToken {
+    pub grant_type: String,
+    pub client_id: String,
+    pub client_secret: String,
+    pub username: String,
+    pub password: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -176,6 +184,14 @@ pub enum QueryUnits {
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct RefreshToken {
+    pub grant_type: String,
+    pub refresh_token: String,
+    pub client_id: String,
+    pub client_secret: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
 pub struct Sensor {
     pub id: String,
     pub bridge_id: String,
@@ -262,13 +278,15 @@ impl Client {
     ) -> Result<(Token, Instant)> {
         let token_fetch_time = Instant::now();
 
-        let body = json!({
-            "grant_type": "password",
-            "client_id": self.client_id,
-            "client_secret": self.client_secret,
-            "username": username,
-            "password": password,
-        });
+        let request = AccessToken {
+            grant_type: "password".to_string(),
+            client_id: self.client_id.to_string(),
+            client_secret: self.client_secret.to_string(),
+            username: username.to_string(),
+            password: password.to_string(),
+        };
+
+        let body = serde_json::to_string(&request)?;
 
         let response = self
             .post("/oauth/token", None, body, "authenticate")
@@ -278,7 +296,9 @@ impl Client {
         let token = match &response.data[0] {
             Data::Token(t) => t.clone(),
             _ => {
-                return Err(anyhow!("Unexpected response type while refreshing token"));
+                return Err(anyhow!(
+                    "Unexpected response type while requesting access token"
+                ));
             }
         };
 
@@ -335,12 +355,14 @@ impl Client {
     pub async fn refresh_token(&self, refresh_token: &str) -> Result<(Token, Instant)> {
         let token_fetch_time = Instant::now();
 
-        let body = json!({
-            "grant_type": "refresh_token",
-            "refresh_token": refresh_token,
-            "client_id": self.client_id,
-            "client_secret": self.client_secret,
-        });
+        let refresh_token = RefreshToken {
+            grant_type: "refresh_token".to_string(),
+            refresh_token: refresh_token.to_string(),
+            client_id: self.client_id.clone(),
+            client_secret: self.client_secret.clone(),
+        };
+
+        let body = serde_json::to_string(&refresh_token)?;
 
         let response = self
             .post("/oauth/token", None, body, "refresh token")
@@ -395,11 +417,11 @@ impl Client {
         json_from(response, &uri, "GET", request_name).await
     }
 
-    async fn post<T: ToString>(
+    async fn post(
         &self,
         path: &str,
         access_token: Option<&str>,
-        body: T,
+        body: String,
         request_name: &str,
     ) -> Result<Response> {
         let uri = format!("{}{}", API_URI, path);
