@@ -68,6 +68,7 @@ pub struct AccessToken {
 #[serde(untagged)]
 pub enum Data {
     Bridge(Bridge),
+    Budget(Budget),
     Sensor(Sensor),
     Token(Token),
     User(User),
@@ -89,6 +90,38 @@ pub struct Bridge {
     pub product: String,
     pub user: Option<User>,
     pub location: Option<Location>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub struct Budget {
+    pub id: u64,
+    pub name: String,
+    #[serde(rename(deserialize = "type"))]
+    pub period: BudgetPeriod,
+    /// The budget value is always in gallons even if your preferred units are not gallons
+    pub value: u64,
+    /// The budget thresholds are always in gallons even if your preferred units are not gallons
+    pub thresholds: Vec<u64>,
+    /// The actual usage for the budget period always in gallons even if your preferred units are
+    //not gallons
+    pub actual: f64,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+pub enum BudgetPeriod {
+    DAILY,
+    WEEKLY,
+    MONTHLY,
+}
+
+impl ToString for BudgetPeriod {
+    fn to_string(&self) -> String {
+        match self {
+            BudgetPeriod::DAILY => "daily".to_string(),
+            BudgetPeriod::WEEKLY => "weekly".to_string(),
+            BudgetPeriod::MONTHLY => "monthly".to_string(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -305,6 +338,19 @@ impl Client {
         Ok((token, token_fetch_time))
     }
 
+    pub async fn budgets(
+        &self,
+        access_token: &str,
+        user_id: i64,
+        sensor_id: &str,
+    ) -> Result<Vec<Budget>> {
+        let path = format!("/users/{}/devices/{}/budgets", user_id, sensor_id);
+
+        let response = self.get(&path, Some(access_token), "budgets").await?;
+
+        response.data.iter().map(budget).collect()
+    }
+
     pub async fn devices(&mut self, access_token: &str, user_id: i64) -> Result<Vec<Device>> {
         let path = format!("/users/{}/devices?location=true", user_id);
         let response = self.get(&path, Some(access_token), "devices").await?;
@@ -469,6 +515,13 @@ fn deserialize(body: &str, uri: &str, request_name: &str) -> Result<Response> {
 
             Err(e)
         }
+    }
+}
+
+fn budget(data: &Data) -> Result<Budget> {
+    match data {
+        Data::Budget(b) => Ok(b.clone()),
+        _ => Err(anyhow!("Unable to find budget in response")),
     }
 }
 

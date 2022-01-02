@@ -34,6 +34,7 @@ async fn main() -> Result<()> {
 
     Downloader::new(
         flume,
+        configuration.budget_interval(),
         configuration.device_interval(),
         configuration.query_interval(),
         error_tx.clone(),

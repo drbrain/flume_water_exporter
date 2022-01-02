@@ -5,6 +5,7 @@ use chrono::DateTime;
 use chrono_tz::Tz;
 
 use crate::client;
+use crate::client::Budget;
 use crate::client::Client;
 use crate::device::Device;
 use crate::sensor::Sensor;
@@ -23,6 +24,16 @@ pub struct Flume {
 }
 
 impl Flume {
+    pub async fn budgets(&mut self, user_id: i64, sensor: &Sensor) -> Result<Vec<Budget>> {
+        self.refresh_token_if_expired().await?;
+
+        let sensor_id = sensor.sensor.id.clone();
+
+        self.client
+            .budgets(&self.access_token, user_id, &sensor_id)
+            .await
+    }
+
     pub async fn devices(&mut self, user_id: i64) -> Result<Vec<Device>> {
         self.refresh_token_if_expired().await?;
 

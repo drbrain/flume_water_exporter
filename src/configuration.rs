@@ -13,8 +13,9 @@ pub struct Configuration {
     secret_id: String,
     username: String,
     password: String,
-    query_interval: Option<u64>,
+    budget_interval: Option<u64>,
     device_interval: Option<u64>,
+    query_interval: Option<u64>,
     flume_timeout: Option<u64>,
 }
 
@@ -60,6 +61,15 @@ impl Configuration {
 
     pub fn password(&self) -> String {
         self.password.clone()
+    }
+
+    /// Interval between fetching budget data from Flume in seconds.
+    ///
+    /// Defaults to 60 minutes, the Flume Water API has a rate limit of 120 requests per hour.
+    pub fn budget_interval(&self) -> std::time::Duration {
+        let interval = self.budget_interval.unwrap_or(3600);
+
+        std::time::Duration::from_secs(interval)
     }
 
     /// Interval between fetching device data (bridge and sensor connected, battery level) from

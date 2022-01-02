@@ -54,6 +54,9 @@ batteries will last at any level.
 `flume_water_usage_liters` is a counter for the number of liters the meter has
 seen.
 
+`flume_water_budget_liters` is a gauge for each meter budget.  The budget name
+and period are included as labels.
+
 The following metrics contain a `request_name` label:
 
 `flume_water_http_request_duration_seconds` is a histogram of response times

@@ -14,8 +14,10 @@ use log::error;
 
 use prometheus::register_counter_vec;
 use prometheus::register_gauge_vec;
+use prometheus::register_int_gauge_vec;
 use prometheus::CounterVec;
 use prometheus::GaugeVec;
+use prometheus::IntGaugeVec;
 
 use std::time::Duration;
 use std::time::Instant;
@@ -60,6 +62,12 @@ lazy_static! {
         &["location"],
     )
     .unwrap();
+    static ref BUDGET: IntGaugeVec = register_int_gauge_vec!(
+        "flume_water_budget_liters",
+        "Flume sensor budget",
+        &["location", "period", "name"],
+    )
+    .unwrap();
     static ref USAGE: CounterVec = register_counter_vec!(
         "flume_water_usage_liters",
         "Water usage in liters",
@@ -70,12 +78,14 @@ lazy_static! {
 
 pub struct Downloader {
     error_tx: Sender,
+    budget_interval: Duration,
     device_interval: Duration,
     query_interval: Duration,
 
     flume: Flume,
 
     user_id: Option<i64>,
+    budgets_last_update: Option<Instant>,
     devices_last_update: Option<Instant>,
     sensors: Option<Vec<Sensor>>,
 }
@@ -83,12 +93,14 @@ pub struct Downloader {
 impl Downloader {
     pub fn new(
         flume: Flume,
+        budget_interval: Duration,
         device_interval: Duration,
         query_interval: Duration,
         error_tx: Sender,
     ) -> Self {
         Downloader {
             error_tx,
+            budget_interval,
             device_interval,
             query_interval,
 
@@ -96,6 +108,7 @@ impl Downloader {
 
             user_id: None,
 
+            budgets_last_update: None,
             devices_last_update: None,
             sensors: None,
         }
@@ -132,9 +145,12 @@ impl Downloader {
     }
 
     async fn update(&mut self) -> Result<()> {
+        // refresh sensors first, then fetch extra data based on current sensors
         self.devices().await?;
 
         self.query().await?;
+
+        self.budgets().await?;
 
         Ok(())
     }
@@ -183,6 +199,37 @@ impl Downloader {
 
         self.sensors = Some(sensors);
         self.devices_last_update = Some(Instant::now());
+
+        Ok(true)
+    }
+
+    async fn budgets(&mut self) -> Result<bool> {
+        if let Some(last_update) = self.budgets_last_update {
+            if Instant::now().duration_since(last_update) < self.budget_interval {
+                return Ok(false);
+            }
+        }
+
+        let user_id = self.user_id().await?;
+
+        if let Some(sensors) = &self.sensors {
+            for sensor in sensors {
+                let location = &sensor.sensor.location.as_ref().unwrap().name;
+
+                let budgets = self.flume.budgets(user_id, sensor).await?;
+
+                budgets.iter().for_each(|budget| {
+                    let gallons = budget.value as f64;
+                    let liters = (gallons * 3.7854) as i64;
+
+                    BUDGET
+                        .with_label_values(&[location, &budget.period.to_string(), &budget.name])
+                        .set(liters)
+                });
+            }
+        }
+
+        self.budgets_last_update = Some(Instant::now());
 
         Ok(true)
     }
