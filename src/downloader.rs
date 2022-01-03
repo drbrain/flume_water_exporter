@@ -23,7 +23,8 @@ use std::time::Duration;
 use std::time::Instant;
 
 use tokio::sync::mpsc;
-use tokio::time::sleep;
+use tokio::time::interval;
+use tokio::time::MissedTickBehavior;
 
 type Sender = mpsc::Sender<anyhow::Error>;
 
@@ -116,13 +117,16 @@ impl Downloader {
 
     pub async fn start(mut self) {
         tokio::spawn(async move {
+            let mut interval = interval(self.query_interval);
+            interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
+
             loop {
                 match self.update().await {
                     Ok(_) => (),
                     Err(e) => self.handle_error(e).await,
                 };
 
-                sleep(self.query_interval).await;
+                interval.tick().await;
             }
         });
     }
