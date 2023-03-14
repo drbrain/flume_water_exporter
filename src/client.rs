@@ -67,9 +67,9 @@ pub struct AccessToken {
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(untagged)]
 pub enum Data {
+    Sensor(Sensor),
     Bridge(Bridge),
     Budget(Budget),
-    Sensor(Sensor),
     Token(Token),
     User(User),
     QueryResults(HashMap<String, Vec<QueryResult>>),
@@ -86,7 +86,6 @@ pub struct Bridge {
     pub id: String,
     pub last_seen: String,
     pub connected: bool,
-    pub supports_ap: bool,
     pub product: String,
     pub user: Option<User>,
     pub location: Option<Location>,
